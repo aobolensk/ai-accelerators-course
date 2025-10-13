@@ -1,3 +1,5 @@
+#include <cuda_runtime.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -11,8 +13,20 @@
 #include <string>
 #include <vector>
 
-#include <cuda_runtime.h>
+// TODO: Move to utils
+#define CHECK_CUDA_ERROR(callable)                                        \
+  {                                                                       \
+    auto codeError = callable;                                            \
+    if (codeError != cudaSuccess) {                                       \
+      std::cerr << "\033[1;31merror\033[0m: ";                            \
+      std::cerr << cudaGetErrorString(codeError) << '\n';                 \
+      std::cerr << "code error: " << static_cast<int>(codeError) << '\n'; \
+      std::cerr << "loc: " << __FILE__ << '(' << __LINE__ << ")\n";       \
+      std::exit(codeError);                                               \
+    }                                                                     \
+  }
 
+namespace {
 std::vector<float> make_matrix(std::size_t n) {
   throw std::runtime_error("make_matrix not implemented");
 }
@@ -36,13 +50,12 @@ std::vector<float> run_cuda_simt(const std::vector<float> &matrix,
   throw std::runtime_error("CUDA SIMT method not implemented");
 }
 
-double measure_seconds(std::function<std::vector<float>()> work,
+double measure_seconds(const std::function<std::vector<float>()> &work,
                        std::vector<float> &result_store) {
   const auto start = std::chrono::high_resolution_clock::now();
   result_store = work();
   const auto stop = std::chrono::high_resolution_clock::now();
-  const std::chrono::duration<double> duration = stop - start;
-  return duration.count();
+  return std::chrono::duration<double>(stop - start).count();
 }
 
 float max_abs_diff(const std::vector<float> &baseline,
@@ -58,6 +71,37 @@ float max_abs_diff(const std::vector<float> &baseline,
   return max_diff;
 }
 
+// TODO: Create basic utils file
+struct RunResult {
+  std::vector<float> result;
+  double seconds = 0.0;
+  float diff = 0.0f;
+  bool success = false;
+  explicit operator bool() const noexcept { return success; }
+};
+
+std::string format_time(double seconds) {
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << seconds;
+  return oss.str();
+}
+
+std::string format_diff(float diff) {
+  std::ostringstream oss;
+  oss << std::defaultfloat << std::setprecision(1) << diff;
+  return oss.str();
+}
+
+void print_report(std::string_view testName, const RunResult &result) {
+  if (result) {
+    std::cout << testName << ": " << format_time(result.seconds)
+              << " sec (diff: " << format_diff(result.diff) << ")\n";
+  } else {
+    std::cout << testName << ": n/a (diff: n/a)\n";
+  }
+}
+}  // namespace
+
 int main(int argc, char *argv[]) {
   try {
     if (argc != 2) {
@@ -71,33 +115,17 @@ int main(int argc, char *argv[]) {
     }
 
     const auto input = make_matrix(n);
-
-    const auto format_time = [](double seconds) {
-      std::ostringstream oss;
-      oss << std::fixed << std::setprecision(2) << seconds;
-      return oss.str();
-    };
-
-    const auto format_diff = [](float diff) {
-      std::ostringstream oss;
-      oss << std::scientific << std::setprecision(2) << diff;
-      return oss.str();
-    };
-
     std::vector<float> sequential_result;
     const double sequential_seconds = measure_seconds(
         [&]() { return run_sequential(input, n); }, sequential_result);
 
-    std::vector<float> simt_result;
-    double simt_seconds = 0.0;
-    float simt_diff = 0.0f;
-    bool simt_success = false;
+    RunResult simt_res;
     try {
       warmup_cuda(input, n);
-      simt_seconds = measure_seconds([&]() { return run_cuda_simt(input, n); },
-                                     simt_result);
-      simt_diff = max_abs_diff(sequential_result, simt_result);
-      simt_success = true;
+      simt_res.seconds = measure_seconds(
+          [&]() { return run_cuda_simt(input, n); }, simt_res.result);
+      simt_res.diff = max_abs_diff(sequential_result, simt_res.result);
+      simt_res.success = true;
       // TODO: Compare simt_seconds with the OpenMP+AVX2 timing from practice
       // #1.
     } catch (const std::exception &ex) {
@@ -105,12 +133,7 @@ int main(int argc, char *argv[]) {
     }
 
     std::cout << "Sequential: " << format_time(sequential_seconds) << " sec\n";
-    if (simt_success) {
-      std::cout << "SIMT: " << format_time(simt_seconds)
-                << " sec (diff: " << format_diff(simt_diff) << ")\n";
-    } else {
-      std::cout << "SIMT: n/a (diff: n/a)\n";
-    }
+    print_report("SIMT", simt_res);
 
     return EXIT_SUCCESS;
   } catch (const std::exception &ex) {

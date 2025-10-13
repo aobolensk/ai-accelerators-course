@@ -1,3 +1,5 @@
+cmake_minimum_required(VERSION 3.22)
+
 project(ai-accelerators-course)
 
 option(ENABLE_CPU "Enable building CPU-based tasks" OFF)
