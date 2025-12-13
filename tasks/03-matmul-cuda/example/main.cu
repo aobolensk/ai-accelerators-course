@@ -2,29 +2,15 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <functional>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-// TODO: Move to utils
-#define CHECK_CUDA_ERROR(callable)                                        \
-  {                                                                       \
-    auto codeError = callable;                                            \
-    if (codeError != cudaSuccess) {                                       \
-      std::cerr << "\033[1;31merror\033[0m: ";                            \
-      std::cerr << cudaGetErrorString(codeError) << '\n';                 \
-      std::cerr << "code error: " << static_cast<int>(codeError) << '\n'; \
-      std::cerr << "loc: " << __FILE__ << '(' << __LINE__ << ")\n";       \
-      std::exit(codeError);                                               \
-    }                                                                     \
-  }
+#include "utils.h"
 
 namespace {
 std::vector<__half> make_input_matrix(std::size_t n) {
@@ -52,57 +38,6 @@ std::vector<float> run_cutlass(const std::vector<__half> &matrix,
                                std::size_t n) {
   throw std::runtime_error("CUTLASS method not implemented");
 }
-
-double measure_seconds(const std::function<std::vector<float>()> &work,
-                       std::vector<float> &result_store) {
-  const auto start = std::chrono::high_resolution_clock::now();
-  result_store = work();
-  const auto stop = std::chrono::high_resolution_clock::now();
-  return std::chrono::duration<double>(stop - start).count();
-}
-
-float max_abs_diff(const std::vector<float> &baseline,
-                   const std::vector<float> &candidate) {
-  if (baseline.size() != candidate.size()) {
-    throw std::runtime_error(
-        "Result size mismatch while validating correctness");
-  }
-  float max_diff = 0.0f;
-  for (std::size_t i = 0; i < baseline.size(); ++i) {
-    max_diff = std::max(max_diff, std::abs(baseline[i] - candidate[i]));
-  }
-  return max_diff;
-}
-
-// TODO: Create basic utils file
-struct RunResult {
-  std::vector<float> result;
-  double seconds = 0.0;
-  float diff = 0.0f;
-  bool success = false;
-  explicit operator bool() const noexcept { return success; }
-};
-
-std::string format_time(double seconds) {
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(2) << seconds;
-  return oss.str();
-}
-
-std::string format_diff(float diff) {
-  std::ostringstream oss;
-  oss << std::defaultfloat << std::setprecision(1) << diff;
-  return oss.str();
-}
-
-void print_report(std::string_view testName, const RunResult &result) {
-  if (result) {
-    std::cout << testName << ": " << format_time(result.seconds)
-              << " sec (diff: " << format_diff(result.diff) << ")\n";
-  } else {
-    std::cout << testName << ": n/a (diff: n/a)\n";
-  }
-}
 }  // namespace
 
 int main(int argc, char *argv[]) {
@@ -119,34 +54,34 @@ int main(int argc, char *argv[]) {
 
     const auto input = make_input_matrix(n);
     std::vector<float> openmp_result;
-    const double openmp_seconds = measure_seconds(
+    const double openmp_seconds = utils::measure_seconds(
         [&]() { return run_openmp_reference(input, n); }, openmp_result);
 
-    RunResult wmma_res;
+    utils::RunResult wmma_res;
     try {
       warmup_wmma(input, n);
-      wmma_res.seconds = measure_seconds([&]() { return run_wmma(input, n); },
-                                         wmma_res.result);
-      wmma_res.diff = max_abs_diff(openmp_result, wmma_res.result);
+      wmma_res.seconds = utils::measure_seconds(
+          [&]() { return run_wmma(input, n); }, wmma_res.result);
+      wmma_res.diff = utils::max_abs_diff(openmp_result, wmma_res.result);
       wmma_res.success = true;
     } catch (const std::exception &ex) {
       std::cerr << "WMMA method failed: " << ex.what() << '\n';
     }
 
-    RunResult cutlass_res;
+    utils::RunResult cutlass_res;
     try {
       warmup_cutlass(input, n);
-      cutlass_res.seconds = measure_seconds(
+      cutlass_res.seconds = utils::measure_seconds(
           [&]() { return run_cutlass(input, n); }, cutlass_res.result);
-      cutlass_res.diff = max_abs_diff(openmp_result, cutlass_res.result);
+      cutlass_res.diff = utils::max_abs_diff(openmp_result, cutlass_res.result);
       cutlass_res.success = true;
     } catch (const std::exception &ex) {
       std::cerr << "CUTLASS method failed: " << ex.what() << '\n';
     }
 
-    std::cout << "OpenMP: " << format_time(openmp_seconds) << " sec\n";
-    print_report("WMMA", wmma_res);
-    print_report("CUTLASS", cutlass_res);
+    std::cout << "OpenMP: " << utils::format_time(openmp_seconds) << " sec\n";
+    utils::print_report("WMMA", wmma_res);
+    utils::print_report("CUTLASS", cutlass_res);
 
     return EXIT_SUCCESS;
   } catch (const std::exception &ex) {

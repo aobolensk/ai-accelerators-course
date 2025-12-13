@@ -7,6 +7,8 @@ add_executable(${target_name} main.cu)
 
 target_compile_features(${target_name} PRIVATE cxx_std_17)
 
+target_include_directories(${target_name} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../common")
+
 set_target_properties(${target_name}
     PROPERTIES
         CUDA_SEPARABLE_COMPILATION OFF
